@@ -7,7 +7,8 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QTextEdit, QVBoxLayout, QPushButton,
     QComboBox, QMainWindow, QHBoxLayout, QMessageBox
 )
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QIcon, QFont, QColor, QPixmap
+from PyQt5.QtCore import Qt
 import base58
 
 class CryptoWallet:
@@ -124,21 +125,33 @@ class CryptoWalletGUI(QMainWindow):
         self.setWindowTitle("Crypto Wallet")
         self.setWindowIcon(QIcon("icon.png"))
 
-        layout = QVBoxLayout()
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
 
+        layout = QVBoxLayout(main_widget)
+
+        header_label = QLabel("Manage Your Crypto Wallet")
+        header_label.setAlignment(Qt.AlignCenter)
+        header_font = QFont("Arial", 16, QFont.Bold)
+        header_label.setFont(header_font)
+        layout.addWidget(header_label)
+
+        currency_layout = QHBoxLayout()
         self.currency_label = QLabel("Select Currency:")
+        self.currency_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.currency_combo_box = QComboBox()
         for currency in self.wallet.currencies:
             self.currency_combo_box.addItem(currency)
         self.currency_combo_box.currentIndexChanged.connect(self.change_currency)
 
-        currency_layout = QHBoxLayout()
         currency_layout.addWidget(self.currency_label)
         currency_layout.addWidget(self.currency_combo_box)
+        layout.addLayout(currency_layout)
 
         self.address_label = QLabel("Wallet Address:")
         self.address_text = QTextEdit()
         self.address_text.setReadOnly(True)
+        self.address_text.setMaximumHeight(50)
 
         self.balance_label = QLabel("Balance:")
         self.balance_text = QLabel()
@@ -154,22 +167,41 @@ class CryptoWalletGUI(QMainWindow):
         info_layout.addWidget(self.price_label)
         info_layout.addWidget(self.price_text)
 
-        button_layout = QVBoxLayout()
+        layout.addLayout(info_layout)
+
+        button_layout = QHBoxLayout()
 
         self.generate_button = QPushButton("Generate Wallet")
         self.generate_button.clicked.connect(self.generate_wallet)
 
         button_layout.addWidget(self.generate_button)
 
-        layout.addLayout(currency_layout)
-        layout.addLayout(info_layout)
         layout.addLayout(button_layout)
 
-        central_widget = QWidget()
-        central_widget.setLayout(layout)
-        self.setCentralWidget(central_widget)
-
         self.update_wallet_info()
+
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #f0f0f0;
+            }
+            QLabel {
+                color: #333;
+            }
+            QTextEdit, QLineEdit {
+                background-color: #fff;
+                border: 1px solid #ccc;
+            }
+            QPushButton {
+                background-color: #007bff;
+                color: #fff;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #0056b3;
+            }
+        """)
 
     def change_currency(self):
         self.wallet.selected_currency = self.currency_combo_box.currentText()
@@ -201,7 +233,8 @@ class CryptoWalletGUI(QMainWindow):
 
 
 if __name__ == '__main__':
-    app = QApplication(sys.argv)
+    app = QApplication([])
+    app.setStyle("Fusion")  # Use Fusion style
     gui = CryptoWalletGUI()
     gui.show()
-    sys.exit(app.exec_())
+    app.exec_()
