@@ -5,11 +5,29 @@ import ecdsa
 import requests
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QTextEdit, QVBoxLayout, QPushButton,
-    QComboBox, QMainWindow, QHBoxLayout, QMessageBox
+    QComboBox, QMainWindow, QHBoxLayout, QMessageBox, QLineEdit, QProgressBar
 )
-from PyQt5.QtGui import QIcon, QFont, QColor, QPixmap
-from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QIcon, QFont
+from PyQt5.QtCore import Qt, QObject, pyqtSignal, QThread
 import base58
+
+class FetchDataThread(QThread):
+    data_fetched = pyqtSignal(dict)
+
+    def __init__(self, url):
+        super().__init__()
+        self.url = url
+
+    def run(self):
+        try:
+            response = requests.get(self.url)
+            if response.status_code == 200:
+                data = response.json()
+                self.data_fetched.emit(data)
+            else:
+                self.data_fetched.emit({"error": f"Error {response.status_code}: {response.reason}"})
+        except requests.RequestException as e:
+            self.data_fetched.emit({"error": f"Error fetching data: {e}"})
 
 class CryptoWallet:
     def __init__(self):
@@ -29,11 +47,12 @@ class CryptoWallet:
         self.address = None
         self.balance = None
         self.price = None
+        self.balance_api = "https://api.blockchair.com/{currency}/addresses/{address}/balance"
 
     def generate_wallet(self):
         self.private_key = self.generate_private_key()
-        self.public_key = self.generate_public_key(self.private_key)
-        self.address = self.generate_address(self.public_key, self.currencies[self.selected_currency]["explorer"])
+        uncompressed_public_key, _ = self.generate_public_key(self.private_key)  # Ignore the compressed public key
+        self.address = self.generate_address(uncompressed_public_key, self.currencies[self.selected_currency]["explorer"])
         self.save_address()
 
     def save_address(self):
@@ -52,25 +71,48 @@ class CryptoWallet:
         return self.addresses.get(self.selected_currency, "No address found")
 
     def fetch_balance(self):
-        url = f"https://{self.currencies[self.selected_currency]['explorer']}/q/addressbalance/{self.address}"
-        try:
-            response = requests.get(url)
-            response.raise_for_status()  # Raise an exception for bad responses (4xx or 5xx)
-            balance_satoshis = int(response.text)
-            self.balance = balance_satoshis / 100000000
-        except requests.RequestException as e:
-            print("Error fetching balance:", e)
+        address = self.get_address()
+        if address:
+            url = f"https://api.blockchair.com/{self.selected_currency.lower()}/addresses/{address}/balance"
+            thread = FetchDataThread(url)
+            thread.data_fetched.connect(self.update_balance)
+            thread.start()
+        else:
             self.balance = None
 
+    def update_balance(self, data):
+        if "error" in data:
+            print(data["error"])
+            self.balance = None
+        else:
+            balance_satoshis = int(data)
+            self.balance = balance_satoshis / 100000000
+
+    def display_balance(self):
+        if self.balance is not None:
+            if self.balance == 0:
+                return "Your current balance is 0. No funds available."
+            elif self.price is not None:
+                crypto_balance = f"{self.balance:,.8f} {self.selected_currency}"
+                usd_balance = f"${self.balance * self.price:,.2f} USD"
+                return f"Your current balance is {crypto_balance} ({usd_balance})."
+            else:
+                return f"Your current balance is {self.balance:,.8f} {self.selected_currency}. Price data not available."
+        else:
+            return "Fetching balance..."
+
     def fetch_price(self):
-        try:
-            response = requests.get(self.currencies[self.selected_currency]["price_api"])
-            response.raise_for_status()  # Raise an exception for bad responses (4xx or 5xx)
-            price_data = response.json()
-            self.price = price_data[self.selected_currency.lower()]["usd"]
-        except requests.RequestException as e:
-            print("Error fetching price:", e)
+        url = self.currencies[self.selected_currency]["price_api"]
+        thread = FetchDataThread(url)
+        thread.data_fetched.connect(self.update_price)
+        thread.start()
+
+    def update_price(self, data):
+        if "error" in data:
+            print(data["error"])
             self.price = None
+        else:
+            self.price = data[self.selected_currency.lower()]["usd"]
 
     @staticmethod
     def generate_private_key():
@@ -86,33 +128,34 @@ class CryptoWallet:
         compressed_public_key = vk.to_string("compressed")
         return uncompressed_public_key, compressed_public_key
 
-    @staticmethod
-    def generate_address(public_key, explorer):
+    def generate_address(self, public_key, explorer):
         ripemd160 = hashlib.new('ripemd160')
-        ripemd160.update(hashlib.sha256(public_key[0]).digest())
+        ripemd160.update(hashlib.sha256(public_key).digest())
         hash160 = ripemd160.digest()
-        address = CryptoWallet.hash160_to_p2pkh(hash160)
+        address = hash160_to_p2pkh(hash160)  # Corrected call to helper function
         return address
 
-    @staticmethod
-    def hash160_to_p2pkh(hash160):
-        # Step 1: Prepend version byte (0x00 for mainnet, 0x6f for testnet)
-        version_byte = b'\x00'  # Assuming mainnet address
+    def send_transaction(self, recipient_address, amount):
+        # Implement transaction sending logic here
+        pass
 
-        # Step 2: Add version byte to hash160
-        extended_hash160 = version_byte + hash160
+def hash160_to_p2pkh(hash160):
+    # Step 1: Prepend version byte (0x00 for mainnet, 0x6f for testnet)
+    version_byte = b'\x00'  # Assuming mainnet address
 
-        # Step 3: Calculate checksum (double SHA256 hash of extended hash160)
-        checksum = hashlib.sha256(hashlib.sha256(extended_hash160).digest()).digest()[:4]
+    # Step 2: Add version byte to hash160
+    extended_hash160 = version_byte + hash160
 
-        # Step 4: Append checksum to extended hash160
-        extended_hash160_checksum = extended_hash160 + checksum
+    # Step 3: Calculate checksum (double SHA256 hash of extended hash160)
+    checksum = hashlib.sha256(hashlib.sha256(extended_hash160).digest()).digest()[:4]
 
-        # Step 5: Base58 encode the extended hash160 with checksum
-        bitcoin_address = base58.b58encode(extended_hash160_checksum)
+    # Step 4: Append checksum to extended hash160
+    extended_hash160_checksum = extended_hash160 + checksum
 
-        return bitcoin_address.decode('utf-8')  # Convert bytes to string
+    # Step 5: Base58 encode the extended hash160 with checksum
+    bitcoin_address = base58.b58encode(extended_hash160_checksum)
 
+    return bitcoin_address.decode('utf-8')  # Convert bytes to string
 
 class CryptoWalletGUI(QMainWindow):
     def __init__(self):
@@ -130,9 +173,43 @@ class CryptoWalletGUI(QMainWindow):
 
         layout = QVBoxLayout(main_widget)
 
+        # Dark theme stylesheet
+        dark_theme_stylesheet = """
+            QMainWindow {
+                background-color: #222;
+            }
+            QLabel {
+                color: #fff;
+            }
+            QTextEdit, QLineEdit {
+                background-color: #333;
+                color: #fff;
+                border: 1px solid #555;
+                padding: 5px;
+            }
+            QPushButton {
+                background-color: #007bff;
+                color: #fff;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #0056b3;
+            }
+            QComboBox {
+                background-color: #333;
+                color: #fff;
+                border: 1px solid #555;
+                padding: 5px;
+                selection-background-color: #007bff;
+            }
+        """
+        self.setStyleSheet(dark_theme_stylesheet)
+
         header_label = QLabel("Manage Your Crypto Wallet")
         header_label.setAlignment(Qt.AlignCenter)
-        header_font = QFont("Arial", 16, QFont.Bold)
+        header_font = QFont("Poppins", 16, QFont.Bold)  # Using Poppins font
         header_label.setFont(header_font)
         layout.addWidget(header_label)
 
@@ -169,39 +246,37 @@ class CryptoWalletGUI(QMainWindow):
 
         layout.addLayout(info_layout)
 
+        send_layout = QHBoxLayout()
+        self.recipient_label = QLabel("Recipient Address:")
+        self.recipient_text = QLineEdit()
+        send_layout.addWidget(self.recipient_label)
+        send_layout.addWidget(self.recipient_text)
+        layout.addLayout(send_layout)
+
+        self.amount_label = QLabel("Amount:")
+        self.amount_text = QLineEdit()
+        layout.addWidget(self.amount_label)
+        layout.addWidget(self.amount_text)
+
         button_layout = QHBoxLayout()
 
         self.generate_button = QPushButton("Generate Wallet")
         self.generate_button.clicked.connect(self.generate_wallet)
 
+        self.update_button = QPushButton("Update Balance")
+        self.update_button.clicked.connect(self.update_balance)
+
+        self.send_button = QPushButton("Send")
+        self.send_button.clicked.connect(self.send_transaction)
+
         button_layout.addWidget(self.generate_button)
+        button_layout.addWidget(self.update_button)
+        button_layout.addWidget(self.send_button)
 
         layout.addLayout(button_layout)
 
         self.update_wallet_info()
 
-        self.setStyleSheet("""
-            QWidget {
-                background-color: #f0f0f0;
-            }
-            QLabel {
-                color: #333;
-            }
-            QTextEdit, QLineEdit {
-                background-color: #fff;
-                border: 1px solid #ccc;
-            }
-            QPushButton {
-                background-color: #007bff;
-                color: #fff;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #0056b3;
-            }
-        """)
 
     def change_currency(self):
         self.wallet.selected_currency = self.currency_combo_box.currentText()
@@ -209,32 +284,38 @@ class CryptoWalletGUI(QMainWindow):
 
     def generate_wallet(self):
         self.wallet.generate_wallet()
+        QMessageBox.information(self, "Wallet Generated", f"Wallet address generated and saved: {self.wallet.address}")
         self.update_wallet_info()
-        QMessageBox.information(self, "Wallet Generated", "Wallet generated successfully!")
-
-    def update_wallet_info(self):
-        self.address_text.setPlainText(self.wallet.get_address())
-        self.update_balance()
-        self.update_price()
 
     def update_balance(self):
         self.wallet.fetch_balance()
-        if self.wallet.balance is not None:
-            self.balance_text.setText(f"{self.wallet.balance:.8f} {self.wallet.selected_currency}")
+
+    def update_wallet_info(self):
+        address = self.wallet.get_address()
+        if address != "No address found":
+            self.address_text.setPlainText(address)
+            self.update_balance()
         else:
-            self.balance_text.setText("Error fetching balance")
+            self.address_text.setPlainText("Error: No address found")
+            self.balance_text.setText("")
+        self.update_price()
 
     def update_price(self):
         self.wallet.fetch_price()
-        if self.wallet.price is not None:
-            self.price_text.setText(f"${self.wallet.price:.2f}")
-        else:
-            self.price_text.setText("Error fetching price")
 
+    def send_transaction(self):
+        recipient_address = self.recipient_text.text()
+        amount = float(self.amount_text.text())
+        if recipient_address and amount > 0:
+            self.wallet.send_transaction(recipient_address, amount)
+            QMessageBox.information(self, "Transaction Sent", "Transaction successfully sent.")
+            # Optionally update wallet info or display confirmation to the user
+        else:
+            QMessageBox.warning(self, "Invalid Input", "Please enter a valid recipient address and amount.")
 
 if __name__ == '__main__':
     app = QApplication([])
-    app.setStyle("Fusion")  # Use Fusion style
+    app.setStyle("Fusion")
     gui = CryptoWalletGUI()
     gui.show()
-    app.exec_()
+    sys.exit(app.exec_())
